@@ -12,9 +12,15 @@ N kvm-intel.ko
 N kvm-amd.ko
 N kvm.ko
 
+# acpi
+N acpi_call.ko
+N cpufreq_conservative.ko
+N cpufreq_ondemand.ko
+
 # sensors
 N coretemp.ko
 N k10temp.ko
+N hwmon-vid.ko
 N it87.ko
 N adt7470.ko
 N adt7475.ko
@@ -25,14 +31,6 @@ N nct6775.ko
 F mii.ko
 F cdc_ether.ko
 F rndis_host.ko
-
-# iwlwifi
-N libarc4.ko
-N cfg80211.ko
-N mac80211.ko
-N iwlwifi.ko
-N iwlmvm.ko
-N iwldvm.ko
 
 ## i915
 #N dmabuf.ko

@@ -39,9 +39,7 @@ jobs:
           MODEL = ''
           PRODUCTVER = ''
           ADDONS = ''
-          ARCPATCH = ''
           MACSYS = ''
-          USBMOUNT = ''
           CUSTOMKERNEL = ''
           FORMAT = ''
           try:
@@ -49,9 +47,6 @@ jobs:
               MODEL = jsonbody.get('model', '')
               PRODUCTVER = jsonbody.get('version', '')
               ADDONS = jsonbody.get('addons', '')
-              ARCPATCH = jsonbody.get('patch', '')
-              MACSYS = jsonbody.get('macsys', '')
-              USBMOUNT = jsonbody.get('usbmount', '')
               CUSTOMKERNEL = jsonbody.get('customkernel', '')
               FORMAT = jsonbody.get('format', '')
           except ValueError as e:
@@ -60,9 +55,6 @@ jobs:
           set_output("MODEL", MODEL)
           set_output("PRODUCTVER", PRODUCTVER)
           set_output("ADDONS", ADDONS)
-          set_output("ARCPATCH", ARCPATCH)
-          set_output("MACSYS", MACSYS)
-          set_output("USBMOUNT", USBMOUNT)
           set_output("CUSTOMKERNEL", CUSTOMKERNEL)
           set_output("FORMAT", FORMAT)
 
@@ -74,13 +66,6 @@ jobs:
 
           echo "Version: ${VERSION}"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
-
-          if [ -n "${VERSION}" ]; then
-            # Modify Source File
-            echo "${VERSION}" >VERSION
-            echo "${VERSION}" >files/p1/ARC-VERSION
-            sed 's/^ARC_VERSION=.*/ARC_VERSION="'${VERSION}'"/' -i files/initrd/opt/arc/include/consts.sh
-          fi
 
       - name: Update Comment Building
         id: comment
@@ -95,25 +80,12 @@ jobs:
             > ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}  
             ----
 
-      # Get extractor, LKM, Addons, Modules, Theme and Configs
-      - name: Get extractor, LKM, Addons, Modules, Theme and Configs
+      # Install dependencies
+      - name: Install Dependencies
         run: |
           sudo apt update
           sudo apt install -y jq gawk cpio gettext libelf-dev qemu-utils busybox dialog curl sed 
           sudo snap install yq
-
-          . scripts/func.sh
-
-          getExtractor "files/p3/extractor"
-          getLKMs "files/p3/lkms"
-          getAddons "files/p3/addons"
-          getModules "files/p3/modules"
-          getConfigs "files/p3/configs"
-          getPatches "files/p3/patches"
-          getTheme "files/p1/boot/grub"
-          getOffline "files/p3/configs"
-
-          echo "OK"
 
       # Build incremental
       - name: Build image
@@ -124,9 +96,12 @@ jobs:
             [ "${2}" = "{}" ] && sudo yq eval '.'${1}' = {}' --inplace "${3}" 2>/dev/null || sudo yq eval '.'${1}' = "'"${2}"'"' --inplace "${3}" 2>/dev/null
           }
 
-          echo "Create Arc Image"
-          IMAGE_FILE="arc.img"
-          gzip -dc "files/initrd/opt/arc/grub.img.gz" >"${IMAGE_FILE}"
+          TAG="$(curl -m 5 -kL https://api.github.com/repos/AuxXxilium/arc/releases/latest | grep "tag_name" | awk '{print substr($2, 2, length($2)-3)}')"
+          curl -kL "https://github.com/AuxXxilium/arc/releases/download/${TAG}/arc-${TAG}.img.zip" -o "/tmp/arc.img.zip"
+          unzip -o "/tmp/arc.img.zip" -d "/tmp"
+
+          echo "Modify Arc Image"
+          IMAGE_FILE="/tmp/arc.img"
           fdisk -l "${IMAGE_FILE}"
           
           LOOPX=$(sudo losetup -f)
@@ -138,26 +113,15 @@ jobs:
           sudo mount ${LOOPX}p1 "/tmp/p1"
           sudo mount ${LOOPX}p3 "/tmp/p3"
 
-          echo "Get Buildroot"
-          getBuildroot "2023.08.x" "br"
-          [ ! -f "br/bzImage-arc" ] || [ ! -f "br/initrd-arc" ] && return 1
-          
-          echo "Repack initrd"
-          cp -f "br/bzImage-arc" "files/p3/bzImage-arc"
-          repackInitrd "br/initrd-arc" "files/initrd" "files/p3/initrd-arc"
-
           echo "Set Custom Config"
-          PRESET_CONFIG_FILE="files/p1/user-config.yml"
-          touch "${PRESET_CONFIG_FILE}"
+          PRESET_CONFIG_FILE="/tmp/p1/user-config.yml"
+          sudo touch "${PRESET_CONFIG_FILE}"
           writeConfigKey "model" "${{ env.MODEL }}" "${PRESET_CONFIG_FILE}"
           writeConfigKey "productver" "${{ env.PRODUCTVER }}" "${PRESET_CONFIG_FILE}"
           writeConfigKey "arc" "{}" "${PRESET_CONFIG_FILE}"
-          writeConfigKey "arc.patch" "${{ env.ARCPATCH }}" "${PRESET_CONFIG_FILE}"
-          writeConfigKey "arc.macsys" "${{ env.MACSYS }}" "${PRESET_CONFIG_FILE}"
-          writeConfigKey "arc.custom" "true" "${PRESET_CONFIG_FILE}"
-          writeConfigKey "arc.usbmount" "${{ env.USBMOUNT }}" "${PRESET_CONFIG_FILE}"
+          writeConfigKey "automated" "true" "${PRESET_CONFIG_FILE}"
           if [ "${{ env.MODEL }}" = "SA6400" ]; then
-            writeConfigKey "arc.kernel" "${{ env.KERNEL }}" "${PRESET_CONFIG_FILE}"
+            writeConfigKey "kernel" "${{ env.KERNEL }}" "${PRESET_CONFIG_FILE}"
           fi
           writeConfigKey "addons" "{}" "${PRESET_CONFIG_FILE}"
           if [ -n "${{ env.ADDONS }}" ]; then
@@ -168,10 +132,9 @@ jobs:
             done
           fi
           echo "$(cat "${PRESET_CONFIG_FILE}")"
-          echo "arc-${{ env.MODEL }}-${{ env.PRODUCTVER }}-${{ env.VERSION }}" >"files/p3/automated"
-          echo "Copying files"
-          sudo cp -Rf "files/p1/"* "/tmp/p1"
-          sudo cp -Rf "files/p3/"* "/tmp/p3"
+          echo "arc-${{ env.MODEL }}-${{ env.PRODUCTVER }}-${{ env.VERSION }}" >"/tmp/automated"
+          sudo cp -f "/tmp/automated" "/tmp/p3/automated"
+          echo "Syncing files"
           sync
 
           echo "Unmount image file"
@@ -182,12 +145,17 @@ jobs:
 
           sudo losetup --detach ${LOOPX}
 
+          cp -f "${IMAGE_FILE}" "arc.img"
+
           if [ "${{ env.FORMAT }}" = "dyn" ]; then
             echo "Image Converter -> dyn"
-            qemu-img convert -O vmdk arc.img arc-dyn.vmdk
+            qemu-img convert arc.img -O vmdk -o adapter_type=lsilogic,compat6 arc-dyn.vmdk
           elif [ "${{ env.FORMAT }}" = "flat" ]; then
             echo "Image Converter -> flat"
-            qemu-img convert -O vmdk -o adapter_type=lsilogic arc.img -o subformat=monolithicFlat arc.vmdk
+            qemu-img convert arc.img -O vmdk -o adapter_type=lsilogic,subformat=monolithicFlat,compat6 arc.vmdk
+          elif [ "${{ env.FORMAT }}" = "vhdx" ]; then
+            echo "Image Converter -> vhdx"
+            qemu-img convert arc.img -O vhdx -o subformat=dynamic arc.vhdx
           fi
 
       # Zip image and generate checksum
@@ -210,6 +178,13 @@ jobs:
           elif [ "${{ env.FORMAT }}" = "flat" ]; then
             zip -9 "arc-${{ env.MODEL }}-${{ env.PRODUCTVER }}-${{ env.VERSION }}.vmdk-flat.zip" arc.vmdk arc-flat.vmdk
             UPLOAD="$(curl -k -F "file=@arc-${{ env.MODEL }}-${{ env.PRODUCTVER }}-${{ env.VERSION }}.vmdk-flat.zip" "https://file.io")"
+            if ! echo "${UPLOAD}" | grep -oP '"link":\s*"\K[^"]+'; then
+              echo "Upload failed"
+              exit 1
+            fi
+          elif [ "${{ env.FORMAT }}" = "vhdx" ]; then
+            zip -9 "arc-${{ env.MODEL }}-${{ env.PRODUCTVER }}-${{ env.VERSION }}.vhdx.zip" arc.vhdx
+            UPLOAD="$(curl -k -F "file=@arc-${{ env.MODEL }}-${{ env.PRODUCTVER }}-${{ env.VERSION }}.vhdx.zip" "https://file.io")"
             if ! echo "${UPLOAD}" | grep -oP '"link":\s*"\K[^"]+'; then
               echo "Upload failed"
               exit 1
@@ -246,7 +221,9 @@ jobs:
           body: |
             Hi @${{ github.event.issue.user.login }}.  
             arc-${{ env.MODEL }}-${{ env.PRODUCTVER }}-${{ env.VERSION }} is ready to download: ${{ env.FIOURL }}
-            > ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}  
+            > ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            If this will not work, do not use customized Versions!
             ----
 
       - name: Close Issues

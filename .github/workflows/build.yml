@@ -11,13 +11,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "format %y.%-m.$i or auto"
+        description: "format %y.%m.$d or auto"
         required: false
         type: string
       notice:
         description: "Notice here"
         required: false
         type: string
+      latest:
+        description: "latest"
+        default: true
+        type: boolean
       prerelease:
         description: "pre release"
         default: false
@@ -26,29 +30,9 @@ on:
         description: "clean"
         default: false
         type: boolean
-      addons_version:
-        description: "addons version"
-        default: ""
-        type: string
-      configs_version:
-        description: "configs version"
-        default: ""
-        type: string
-      modules_version:
-        description: "modules version"
-        default: ""
-        type: string
-      lkm_version:
-        description: "lkm version"
-        default: ""
-        type: string
-      patches_version:
-        description: "patches version"
-        default: ""
-        type: string
-      theme_version:
-        description: "theme version"
-        default: ""
+      update_version:
+        description: "update min version"
+        default: "24.07.12"
         type: string
 
 jobs:
@@ -65,12 +49,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           keep-count: 10
           keep-old-minor-releases: false
-
-      - name: Changelog
-        uses: Bullrich/generate-release-changelog@master
-        id: Changelog
-        env:
-          REPO: ${{ github.repository }}
 
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -96,12 +74,7 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
           else
-            LATEST_TAG="$(curl -skL "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r ".tag_name" 2>/dev/null)"
-            if [[ -n "${LATEST_TAG}" && "`echo ${LATEST_TAG} | cut -d '.' -f 1,2`" = "`date +'%y.%-m.%-d'`" ]]; then  # format %y.%-m.$i
-              VERSION="`echo ${LATEST_TAG} | awk -F '.' '{$3=$3+1}1' OFS='.'`"
-            else
-              VERSION="`date +'%y.%-m.%-d'`"
-            fi
+            VERSION="`date +'%y.%m.%d'`"
           fi
           
           echo "Version: ${VERSION}"
@@ -119,31 +92,27 @@ jobs:
         run: |
           . scripts/func.sh
 
-          getExtractor "files/p3/extractor"
-          LKMTAG="${{ inputs.lkm_version }}"
           getLKMs "files/p3/lkms"
           echo "LKMTAG=${TAG}" >> $GITHUB_ENV
-          ADDONSTAG="${{ inputs.addons_version }}"
           getAddons "files/p3/addons"
           echo "ADDONSTAG=${TAG}" >> $GITHUB_ENV
-          MODULESTAG="${{ inputs.modules_version }}"
           getModules "files/p3/modules"
           echo "MODULESTAG=${TAG}" >> $GITHUB_ENV
-          CONFIGSTAG="${{ inputs.configs_version }}"
           getConfigs "files/p3/configs"
           echo "CONFIGSTAG=${TAG}" >> $GITHUB_ENV
-          PATCHESTAG="${{ inputs.patches_version }}"
           getPatches "files/p3/patches"
           echo "PATCHESTAG=${TAG}" >> $GITHUB_ENV
-          THEMETAG="${{ inputs.theme_version }}"
           getTheme "files/p1/boot/grub"
           echo "THEMETAG=${TAG}" >> $GITHUB_ENV
           getOffline "files/p3/configs"
+          getBuildroot "latest" "br"
+          echo "BR_VERSION=${TAG}" >> $GITHUB_ENV
+          echo "BUILD_TIME=$(date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
 
           echo "OK"
 
       # Build incremental
-      - name: Build Image
+      - name: Build Image New
         run: |
           . scripts/func.sh
 
@@ -161,9 +130,6 @@ jobs:
           sudo mount ${LOOPX}p1 "/tmp/p1"
           sudo mount ${LOOPX}p3 "/tmp/p3"
 
-          echo "Get Buildroot"
-          br_version="2023.08.x"
-          getBuildroot "${br_version}" "br"
           [ ! -f "br/bzImage-arc" ] || [ ! -f "br/initrd-arc" ] && return 1
           
           echo "Repack initrd"
@@ -184,31 +150,29 @@ jobs:
           sudo losetup --detach ${LOOPX}
 
           echo "Image Converter"
-          qemu-img convert -O vmdk arc.img arc-dyn.vmdk
-          qemu-img convert -O vmdk -o adapter_type=lsilogic arc.img -o subformat=monolithicFlat arc.vmdk
+          qemu-img convert ${IMAGE_FILE} -O vmdk -o adapter_type=lsilogic,compat6 arc-dyn.vmdk
+          qemu-img convert ${IMAGE_FILE} -O vmdk -o adapter_type=lsilogic,subformat=monolithicFlat,compat6 arc.vmdk
+          qemu-img convert ${IMAGE_FILE} -O vhdx -o subformat=dynamic arc.vhdx
+
+          echo "Create Arc ova"
+          convertova "arc.img" "arc.ova"
+
+          # Zip update and generate checksum
+          zip -9j update.zip "files/p3/bzImage-arc" "files/p3/initrd-arc" "files/p1/ARC-VERSION" "files/p1/boot/grub/grub.cfg"
+          sha256sum update.zip >checksum.sha256
 
       # Zip image and generate checksum
       - name: Pack
         run: |
           if [ -n "${{ env.VERSION }}" ]; then
+            # NBase
             zip -9 "arc-${{ env.VERSION }}.img.zip" arc.img
             zip -9 "arc-${{ env.VERSION }}.vmdk-dyn.zip" arc-dyn.vmdk
             zip -9 "arc-${{ env.VERSION }}.vmdk-flat.zip" arc.vmdk arc-flat.vmdk
-          else
-            zip -9 "arc.img.zip" arc.img
+            zip -9 "arc-${{ env.VERSION }}.vhdx.zip" arc.vhdx
+            zip -9 "arc-${{ env.VERSION }}.ova.zip" arc.ova
           fi
-          zip -9j update.zip "files/p3/bzImage-arc" "files/p3/initrd-arc" "files/p1/ARC-VERSION" "files/p1/boot/grub/grub.cfg"
-
-      # Upload artifact
-      - name: Upload
-        if: success() && env.VERSION == ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: Images
-          path: |
-            arc.img.zip
-            update.zip
-          retention-days: 5
+          echo "${{ inputs.update_version }}" >check.update
 
       # Publish a release if is a tag
       - name: Release
@@ -217,22 +181,24 @@ jobs:
         with:
           tag: ${{ env.VERSION }}
           prerelease: ${{ inputs.prerelease }}
+          makeLatest: ${{ inputs.latest }}
           allowUpdates: true
           body: |
-            ### Notice: ${{ inputs.notice }}
+            ### Information:
+            Notice: ${{ inputs.notice }}
+            Buildtime: ${{ env.BUILD_TIME }}
+            Full Changelog and Arc Patch (Decryption Key) can be found in my Discord.
 
-            Buildroot: ${{ inputs.br_version }}
+            ### Versions:
             Addons: ${{ env.ADDONSTAG }}
             Configs: ${{ env.CONFIGSTAG }}
             Modules: ${{ env.MODULESTAG }}
             Patches: ${{ env.PATCHESTAG }}
             Theme: ${{ env.THEMETAG }}
             LKM: ${{ env.LKMTAG }}
-
-            Changelog:
-              ${{ steps.Changelog.outputs.changelog }}
+            Buildroot: ${{ env.BR_VERSION }}
           artifacts: |
-            arc-${{ env.VERSION }}.img.zip
-            arc-${{ env.VERSION }}.vmdk-dyn.zip
-            arc-${{ env.VERSION }}.vmdk-flat.zip
+            arc-*.zip
             update.zip
+            checksum.sha256
+            check.update

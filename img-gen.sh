@@ -9,7 +9,6 @@ sudo git pull
 . scripts/func.sh
 
 # Get extractor, LKM, addons and Modules
-getExtractor "files/p3/extractor"
 getLKMs "files/p3/lkms"
 getAddons "files/p3/addons"
 getModules "files/p3/modules"
@@ -17,6 +16,7 @@ getConfigs "files/p3/configs"
 getPatches "files/p3/patches"
 getTheme "files/p1/boot/grub"
 getOffline "files/p3/configs"
+getBuildroot "latest" "br"
 
 IMAGE_FILE="arc.img"
 gzip -dc "files/initrd/opt/arc/grub.img.gz" >"${IMAGE_FILE}"
@@ -33,10 +33,6 @@ mkdir -p "/tmp/p3"
 sudo mount ${LOOPX}p1 "/tmp/p1"
 sudo mount ${LOOPX}p3 "/tmp/p3"
 
-echo "Get Buildroot"
-# read -rp 'Version (2023.08.x): ' br_version
-[ -z "${br_version}" ] && br_version="2023.08.x"
-getBuildroot "${br_version}" "br"
 [[ ! -f "br/bzImage-arc" || ! -f "br/initrd-arc" ]] && return 1
 
 VERSION=$(date +'%y.%-m.dev')
@@ -63,5 +59,9 @@ rmdir "/tmp/p3"
 
 sudo losetup --detach ${LOOPX}
 
-qemu-img convert -O vmdk arc.img arc-dyn.vmdk
-qemu-img convert -O vmdk -o adapter_type=lsilogic arc.img -o subformat=monolithicFlat arc.vmdk
+#resizeImg "arc.img" "+1024M" "arc-2G.img"
+#mv -f "arc-2G.img" "arc.img"
+
+qemu-img convert arc.img -O vmdk -o adapter_type=lsilogic,compat6 arc-dyn.vmdk
+qemu-img convert arc.img -O vmdk -o adapter_type=lsilogic,subformat=monolithicFlat,compat6 arc.vmdk
+qemu-img convert arc.img -O vhdx -o subformat=dynamic arc.vhdx
